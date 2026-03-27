@@ -94,6 +94,9 @@ export default function Home() {
         onTokenFetchFailed: (msg) => {
           setError(msg);
         },
+        onHandshakeFailed: (msg) => {
+          setError(msg);
+        },
         onInterrupted: () => {
           player.flush();
         },

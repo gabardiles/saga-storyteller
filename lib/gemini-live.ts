@@ -5,8 +5,16 @@
  * sending audio, receiving audio + transcripts, interruption events.
  */
 
-const GEMINI_WS_URL =
+/** API key auth — v1beta bidirectional content. */
+const WS_BIDI_V1BETA =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+/**
+ * Ephemeral tokens from authTokens.create must use v1alpha constrained RPC + access_token
+ * (matches @google/genai Live connect when apiKey starts with auth_tokens/).
+ */
+const WS_CONSTRAINED_V1ALPHA =
+  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 
 const MODEL = "models/gemini-3.1-flash-live-preview";
 
@@ -29,6 +37,8 @@ export interface GeminiLiveCallbacks {
   onUsageMetadata: (usage: LiveUsageSnapshot) => void;
   /** Fired when POST /api/token fails (includes server `error` text when present). */
   onTokenFetchFailed?: (message: string) => void;
+  /** WebSocket closed before setupComplete (wrong endpoint, expired token, etc.). */
+  onHandshakeFailed?: (message: string) => void;
 }
 
 export class GeminiLiveSession {
@@ -38,6 +48,8 @@ export class GeminiLiveSession {
   /** Live API: do not send realtime audio until setupComplete (docs). */
   private setupComplete = false;
   private pendingAudio: string[] = [];
+  /** True while user called disconnect() so onclose does not report a false error. */
+  private closingIntentionally = false;
 
   constructor(callbacks: GeminiLiveCallbacks, systemPrompt: string) {
     this.callbacks = callbacks;
@@ -48,8 +60,7 @@ export class GeminiLiveSession {
     this.callbacks.onStateChange("connecting");
 
     // 1. Get ephemeral token from our API route (or raw key in dev fallback)
-    let token: string;
-    let authQuery: string;
+    let wsUrl: string;
     try {
       const res = await fetch("/api/token", { method: "POST" });
       let data: Record<string, unknown> = {};
@@ -69,7 +80,7 @@ export class GeminiLiveSession {
         return;
       }
 
-      token = data.token as string;
+      const token = data.token as string;
       if (!token || typeof token !== "string") {
         const detail =
           typeof data.error === "string"
@@ -79,11 +90,10 @@ export class GeminiLiveSession {
         this.callbacks.onStateChange("error");
         return;
       }
-      // Ephemeral tokens use access_token=; API key fallback uses key= (per Gemini Live WS docs)
-      authQuery =
-        data.mode === "apikey"
-          ? `key=${encodeURIComponent(token)}`
-          : `access_token=${encodeURIComponent(token)}`;
+      const useApiKeyOnSocket = data.mode === "apikey";
+      wsUrl = useApiKeyOnSocket
+        ? `${WS_BIDI_V1BETA}?key=${encodeURIComponent(token)}`
+        : `${WS_CONSTRAINED_V1ALPHA}?access_token=${encodeURIComponent(token)}`;
     } catch (err) {
       console.error("Failed to get ephemeral token:", err);
       const detail =
@@ -93,9 +103,8 @@ export class GeminiLiveSession {
       return;
     }
 
-    // 2. Open WebSocket
-    const url = `${GEMINI_WS_URL}?${authQuery}`;
-    this.ws = new WebSocket(url);
+    // 2. Open WebSocket (ephemeral → v1alpha constrained; API key → v1beta)
+    this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
       this.setupComplete = false;
@@ -111,11 +120,30 @@ export class GeminiLiveSession {
 
     this.ws.onerror = (event) => {
       console.error("WebSocket error:", event);
+      if (!this.setupComplete) {
+        this.callbacks.onHandshakeFailed?.(
+          "WebSocket error before the session was ready. Check the browser console."
+        );
+      }
       this.callbacks.onStateChange("error");
     };
 
     this.ws.onclose = (event) => {
       console.log("WebSocket closed:", event.code, event.reason);
+      if (this.closingIntentionally) {
+        this.closingIntentionally = false;
+        return;
+      }
+      if (!this.setupComplete) {
+        const reason = event.reason?.trim();
+        this.callbacks.onHandshakeFailed?.(
+          reason
+            ? `Connection closed before ready (${event.code}): ${reason}`
+            : `Connection closed before ready (code ${event.code}). Ephemeral sessions need the v1alpha constrained WebSocket — if you still see this, the token may have expired (start again within ~1 minute).`
+        );
+        this.callbacks.onStateChange("error");
+        return;
+      }
       this.callbacks.onStateChange("disconnected");
     };
   }
@@ -284,8 +312,11 @@ export class GeminiLiveSession {
 
   disconnect(): void {
     if (this.ws) {
+      this.closingIntentionally = true;
       this.ws.close();
       this.ws = null;
+    } else {
+      this.closingIntentionally = false;
     }
     this.setupComplete = false;
     this.pendingAudio = [];
