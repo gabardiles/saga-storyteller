@@ -84,8 +84,15 @@ export default function Home() {
         onStateChange: (s) => {
           setState(s);
           if (s === "error") {
-            setError("Connection failed. Check your API key and try again.");
+            setError(
+              (prev) =>
+                prev ??
+                "WebSocket error or disconnect. Check the browser console."
+            );
           }
+        },
+        onTokenFetchFailed: (msg) => {
+          setError(msg);
         },
         onInterrupted: () => {
           player.flush();

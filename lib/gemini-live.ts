@@ -27,6 +27,8 @@ export interface GeminiLiveCallbacks {
   onStateChange: (state: SessionState) => void;
   onInterrupted: () => void;
   onUsageMetadata: (usage: LiveUsageSnapshot) => void;
+  /** Fired when POST /api/token fails (includes server `error` text when present). */
+  onTokenFetchFailed?: (message: string) => void;
 }
 
 export class GeminiLiveSession {
@@ -50,11 +52,32 @@ export class GeminiLiveSession {
     let authQuery: string;
     try {
       const res = await fetch("/api/token", { method: "POST" });
-      if (!res.ok) throw new Error(`Token fetch failed: ${res.status}`);
-      const data = await res.json();
-      token = data.token;
+      let data: Record<string, unknown> = {};
+      try {
+        data = (await res.json()) as Record<string, unknown>;
+      } catch {
+        /* non-JSON body */
+      }
+
+      if (!res.ok) {
+        const detail =
+          typeof data.error === "string"
+            ? data.error
+            : `Token request failed (HTTP ${res.status}).`;
+        this.callbacks.onTokenFetchFailed?.(detail);
+        this.callbacks.onStateChange("error");
+        return;
+      }
+
+      token = data.token as string;
       if (!token || typeof token !== "string") {
-        throw new Error("Token response missing token string");
+        const detail =
+          typeof data.error === "string"
+            ? data.error
+            : "Token response missing token.";
+        this.callbacks.onTokenFetchFailed?.(detail);
+        this.callbacks.onStateChange("error");
+        return;
       }
       // Ephemeral tokens use access_token=; API key fallback uses key= (per Gemini Live WS docs)
       authQuery =
@@ -63,6 +86,9 @@ export class GeminiLiveSession {
           : `access_token=${encodeURIComponent(token)}`;
     } catch (err) {
       console.error("Failed to get ephemeral token:", err);
+      const detail =
+        err instanceof Error ? err.message : "Network error calling /api/token.";
+      this.callbacks.onTokenFetchFailed?.(detail);
       this.callbacks.onStateChange("error");
       return;
     }
