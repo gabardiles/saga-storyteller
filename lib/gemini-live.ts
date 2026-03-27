@@ -160,7 +160,7 @@ export class GeminiLiveSession {
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
-                voiceName: "Puck",
+                voiceName: "Algenib",
               },
             },
           },
