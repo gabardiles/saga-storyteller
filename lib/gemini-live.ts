@@ -152,12 +152,16 @@ export class GeminiLiveSession {
     if (!this.ws) return;
 
     // Protobuf JSON uses camelCase (see https://ai.google.dev/api/live)
+    // Voice knobs exposed here: prebuilt voice name, languageCode. There is no API field for
+    // speaking rate or pitch — use temperature + system prompt for calmer / slower delivery.
     const setupMessage = {
       setup: {
         model: MODEL,
         generationConfig: {
           responseModalities: ["AUDIO"],
+          temperature: 0.75,
           speechConfig: {
+            languageCode: "en-US",
             voiceConfig: {
               prebuiltVoiceConfig: {
                 voiceName: "Algenib",
