@@ -17,6 +17,7 @@ import {
   STORYTELLER_PROMPT,
   STORYTELLER_PROMPT_SOURCE_FILE,
 } from "@/lib/storyteller-prompt";
+import StorytellerFrog from "@/components/StorytellerFrog";
 
 type UsageEvent = { id: number; at: number; payload: LiveUsageSnapshot };
 
@@ -42,10 +43,35 @@ function usageHeadline(u: LiveUsageSnapshot): string {
 export default function Home() {
   const [state, setState] = useState<SessionState>("disconnected");
   const [lyriaStatus, setLyriaStatus] = useState<LyriaStatus>("disconnected");
+  const [lyriaCloseDetail, setLyriaCloseDetail] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [usageEvents, setUsageEvents] = useState<UsageEvent[]>([]);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [frogWidth, setFrogWidth] = useState(512);
   const usageIdRef = useRef(0);
+  const frogContainerRef = useRef<HTMLDivElement>(null);
+
+  // Poll AudioPlayer to keep mouth animation in sync with actual playback
+  useEffect(() => {
+    const id = setInterval(() => {
+      setIsAudioPlaying(playerRef.current?.isCurrentlyPlaying() ?? false);
+    }, 80);
+    return () => clearInterval(id);
+  }, []);
+
+  // Measure available width for the frog
+  useEffect(() => {
+    const update = () => {
+      if (frogContainerRef.current) {
+        setFrogWidth(frogContainerRef.current.offsetWidth);
+      }
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    if (frogContainerRef.current) ro.observe(frogContainerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   const sessionRef = useRef<GeminiLiveSession | null>(null);
   const captureRef = useRef<AudioCapture | null>(null);
@@ -54,6 +80,8 @@ export default function Home() {
   const lyriaPlayerRef = useRef<LyriaPlayer | null>(null);
   const moodMapperRef = useRef<MoodMapper | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  /** Prevents handleStart from being invoked a second time while already starting. */
+  const isStartingRef = useRef(false);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -61,6 +89,18 @@ export default function Home() {
   }, [transcript]);
 
   const handleStart = useCallback(async () => {
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
+
+    // Tear down any orphaned session first (handles state desync where UI shows
+    // "Ready" but refs still hold live objects from a previous run).
+    captureRef.current?.stop(); captureRef.current = null;
+    playerRef.current?.stop(); playerRef.current = null;
+    sessionRef.current?.disconnect(); sessionRef.current = null;
+    moodMapperRef.current?.reset(); moodMapperRef.current = null;
+    lyriaSessionRef.current?.disconnect(); lyriaSessionRef.current = null;
+    lyriaPlayerRef.current?.stop(); lyriaPlayerRef.current = null;
+
     setError(null);
     setTranscript([]);
     setUsageEvents([]);
@@ -72,6 +112,7 @@ export default function Home() {
 
     // Lyria background music — non-blocking, failures are non-fatal
     setLyriaStatus("disconnected");
+    setLyriaCloseDetail(null);
     const lyriaPlayer = new LyriaPlayer();
     lyriaPlayer.start();
     lyriaPlayerRef.current = lyriaPlayer;
@@ -79,6 +120,7 @@ export default function Home() {
     const lyriaSession = new LyriaSession({
       onAudioChunk: (base64) => lyriaPlayer.enqueue(base64),
       onStatusChange: (status) => setLyriaStatus(status),
+      onCloseDetail: (detail) => setLyriaCloseDetail(detail),
     });
     lyriaSessionRef.current = lyriaSession;
 
@@ -158,6 +200,8 @@ export default function Home() {
       console.error("Mic access denied:", err);
       setError("Microphone access is required. Please allow mic access and try again.");
       session.disconnect();
+    } finally {
+      isStartingRef.current = false;
     }
   }, []);
 
@@ -175,15 +219,25 @@ export default function Home() {
     lyriaPlayerRef.current?.stop();
     lyriaPlayerRef.current = null;
     setLyriaStatus("disconnected");
+    setLyriaCloseDetail(null);
     setUsageEvents([]);
   }, []);
 
   const isActive = state === "connected";
 
   return (
-    <main className="relative isolate flex flex-col items-center min-h-dvh px-4 py-8 max-w-lg mx-auto">
+    <main className="relative isolate flex flex-col items-center min-h-dvh px-4 pb-8 max-w-lg mx-auto">
+      {/* Saga the Frog */}
+      <div ref={frogContainerRef} className="w-full">
+        <StorytellerFrog
+          isSpeaking={isAudioPlaying}
+          width={frogWidth}
+          height={Math.round(frogWidth * (320 / 512))}
+        />
+      </div>
+
       {/* Header */}
-      <h1 className="text-2xl font-medium tracking-tight mb-1">Saga</h1>
+      <h1 className="text-2xl font-medium tracking-tight mt-5 mb-1">Saga</h1>
       <p className="text-stone-400 text-sm mb-8">storyteller for kids</p>
 
       {/* Status */}
@@ -225,29 +279,23 @@ export default function Home() {
                   : "bg-stone-700"
               }`}
             />
-            <span className="text-xs text-stone-600 uppercase tracking-wider">
+            <span className="text-xs text-stone-600 uppercase tracking-wider" title={lyriaCloseDetail ?? undefined}>
               {lyriaStatus === "connected"
                 ? "Music"
                 : lyriaStatus === "connecting"
                 ? "Music…"
                 : lyriaStatus === "failed"
-                ? "No music"
+                ? `No music${lyriaCloseDetail ? ` (${lyriaCloseDetail})` : ""}`
                 : ""}
             </span>
           </>
         )}
       </div>
 
-      {/* Big button — touch-manipulation + onTouchEnd for iPad Safari hit-testing */}
+      {/* Big button */}
       <button
         type="button"
         onClick={isActive ? handleStop : handleStart}
-        onTouchEnd={(e) => {
-          e.preventDefault();
-          if (state !== "connecting") {
-            isActive ? handleStop() : handleStart();
-          }
-        }}
         disabled={state === "connecting"}
         className={`
           relative z-20 min-h-[8.5rem] min-w-[8.5rem] touch-manipulation select-none

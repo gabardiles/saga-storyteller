@@ -61,6 +61,16 @@ export class AudioPlayer {
     this.audioContext = null;
   }
 
+  /**
+   * Returns true while scheduled audio has not yet finished playing.
+   * Uses AudioContext.currentTime vs nextStartTime so it stays accurate
+   * even when all chunks were received up-front in a burst.
+   */
+  isCurrentlyPlaying(): boolean {
+    if (!this.audioContext) return false;
+    return this.audioContext.currentTime < this.nextStartTime;
+  }
+
   private playNext(): void {
     if (!this.audioContext || this.queue.length === 0) return;
 

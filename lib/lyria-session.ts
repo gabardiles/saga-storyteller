@@ -19,10 +19,13 @@ const LYRIA_DEFAULT_PROMPT =
   "warm gentle children's background music with soft acoustic guitar and light percussion";
 
 export type LyriaStatus = "disconnected" | "connecting" | "connected" | "failed";
+export type LyriaStatusDetail = { status: LyriaStatus; reason?: string };
 
 export interface LyriaCallbacks {
   onAudioChunk: (base64: string) => void;
   onStatusChange?: (status: LyriaStatus) => void;
+  /** Called on unexpected close with a human-readable reason string (e.g. "code 1008: ..."). */
+  onCloseDetail?: (detail: string) => void;
 }
 
 export class LyriaSession {
@@ -82,8 +85,13 @@ export class LyriaSession {
 
       this.ws.onclose = (event) => {
         if (!this.closingIntentionally) {
-          console.warn(`[Lyria] WebSocket closed: code=${event.code} reason="${event.reason}"`);
-          this.callbacks.onStatusChange?.("disconnected");
+          const detail = event.reason?.trim()
+            ? `code ${event.code}: ${event.reason}`
+            : `code ${event.code}`;
+          console.warn(`[Lyria] WebSocket closed — ${detail}`);
+          // Treat non-1000 close as failure so the UI shows "No music (code X)"
+          this.callbacks.onStatusChange?.(event.code === 1000 ? "disconnected" : "failed");
+          this.callbacks.onCloseDetail?.(`${detail}`);
         }
         this.setupComplete = false;
       };
