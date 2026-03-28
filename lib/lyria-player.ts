@@ -14,14 +14,15 @@ export class LyriaPlayer {
   private audioContext: AudioContext | null = null;
   private gainNode: GainNode | null = null;
   private nextStartTime = 0;
+  private activeSources: AudioBufferSourceNode[] = [];
 
   start(): void {
     this.audioContext = new AudioContext({ sampleRate: LYRIA_SAMPLE_RATE });
     this.gainNode = this.audioContext.createGain();
     this.gainNode.gain.value = DEFAULT_VOLUME;
     this.gainNode.connect(this.audioContext.destination);
-
     this.nextStartTime = 0;
+    this.activeSources = [];
   }
 
   setVolume(v: number): void {
@@ -55,8 +56,7 @@ export class LyriaPlayer {
     buffer.getChannelData(0).set(left);
     buffer.getChannelData(1).set(right);
 
-    // Schedule immediately at enqueue time (same gapless pattern as AudioPlayer).
-    // Pre-scheduling avoids the gap that would occur if we waited for onended.
+    // Schedule immediately at enqueue time — gapless pattern.
     const source = this.audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(this.gainNode);
@@ -65,9 +65,20 @@ export class LyriaPlayer {
     const startTime = Math.max(currentTime, this.nextStartTime);
     source.start(startTime);
     this.nextStartTime = startTime + buffer.duration;
+
+    // Track so we can hard-stop immediately on stop().
+    this.activeSources.push(source);
+    source.onended = () => {
+      this.activeSources = this.activeSources.filter((s) => s !== source);
+    };
   }
 
   stop(): void {
+    // Silence immediately: stop all pre-scheduled source nodes.
+    for (const src of this.activeSources) {
+      try { src.stop(); } catch { /* already stopped */ }
+    }
+    this.activeSources = [];
     this.nextStartTime = 0;
     this.audioContext?.close();
     this.audioContext = null;

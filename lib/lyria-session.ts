@@ -66,9 +66,17 @@ export class LyriaSession {
         model: "models/lyria-realtime-exp",
         callbacks: {
           onmessage: (message: LiveMusicServerMessage) => {
+            const hasAudio = (message.serverContent?.audioChunks?.length ?? 0) > 0;
+
+            // Log everything except raw audio (too noisy)
+            if (!hasAudio) {
+              console.log("[Lyria] message:", JSON.stringify(message).slice(0, 500));
+            } else {
+              console.log(`[Lyria] audio chunk(s): ${message.serverContent!.audioChunks!.length}`);
+            }
+
             // Audio arrives in serverContent.audioChunks (NOT modelTurn.parts)
             const chunks = message.serverContent?.audioChunks;
-
             if (chunks) {
               for (const chunk of chunks) {
                 if (chunk.data) this.callbacks.onAudioChunk(chunk.data);
@@ -114,9 +122,12 @@ export class LyriaSession {
       console.log("[Lyria] Playing ♪");
       this.callbacks.onStatusChange?.("connected");
     } catch (err) {
-      console.warn("[Lyria] Failed to start session — music disabled.", err);
+      // Log the full error — helps distinguish network failure vs API rejection
+      console.warn("[Lyria] Failed to start session — music disabled.");
+      console.warn("[Lyria] Error detail:", err);
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       this.callbacks.onStatusChange?.("failed");
-      this.callbacks.onCloseDetail?.(err instanceof Error ? err.message : String(err));
+      this.callbacks.onCloseDetail?.(msg);
     }
   }
 

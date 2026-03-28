@@ -223,6 +223,11 @@ export class GeminiLiveSession {
           this.sendAudioNow(chunk);
         }
         this.pendingAudio = [];
+        // Kick off Saga's opening greeting via realtimeInput (NOT clientContent).
+        // gemini-3.1-flash-live-preview rejects clientContent after setup with
+        // 1007 unless history_config.initial_history_in_client_content is true
+        // and it's used only for seeding history.
+        this.sendRealtimeText("[Session started. Begin your opening greeting now.]");
         return;
       }
 
@@ -294,21 +299,16 @@ export class GeminiLiveSession {
   }
 
   /**
-   * Send a text message (useful for initial prompt)
+   * Send text via realtimeInput — the only text path supported by
+   * gemini-3.1-flash-live-preview after the session is established.
    */
-  sendText(text: string): void {
+  sendRealtimeText(text: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     this.ws.send(
       JSON.stringify({
-        clientContent: {
-          turns: [
-            {
-              role: "user",
-              parts: [{ text }],
-            },
-          ],
-          turnComplete: true,
+        realtimeInput: {
+          text: text,
         },
       })
     );

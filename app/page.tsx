@@ -18,8 +18,34 @@ import {
   STORYTELLER_PROMPT_SOURCE_FILE,
 } from "@/lib/storyteller-prompt";
 import StorytellerFrog from "@/components/StorytellerFrog";
+import { PlaySagaIcon } from "@/components/PlaySagaIcon";
 
 type UsageEvent = { id: number; at: number; payload: LiveUsageSnapshot };
+
+function TranscriptLine({
+  text,
+  role,
+  dim,
+}: {
+  text: string;
+  role: "user" | "model";
+  dim?: boolean;
+}) {
+  return (
+    <p
+      className={`text-sm leading-snug break-words transition-opacity duration-500 ${
+        dim ? "opacity-35" : "opacity-90"
+      } ${role === "user" ? "italic" : ""}`}
+    >
+      <span className="text-[11px] mr-1.5 font-medium opacity-50 not-italic">
+        {role === "user" ? "You" : "Saga"}
+      </span>
+      <span className={role === "user" ? "text-white/70" : "text-white"}>
+        {text}
+      </span>
+    </p>
+  );
+}
 
 function usageHeadline(u: LiveUsageSnapshot): string {
   const n = (k: string) => {
@@ -48,11 +74,28 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [usageEvents, setUsageEvents] = useState<UsageEvent[]>([]);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
-  const [frogWidth, setFrogWidth] = useState(512);
-  const usageIdRef = useRef(0);
-  const frogContainerRef = useRef<HTMLDivElement>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [screenSize, setScreenSize] = useState({ width: 390, height: 844 });
 
-  // Poll AudioPlayer to keep mouth animation in sync with actual playback
+  const usageIdRef = useRef(0);
+  const sessionRef = useRef<GeminiLiveSession | null>(null);
+  const captureRef = useRef<AudioCapture | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
+  const lyriaSessionRef = useRef<LyriaSession | null>(null);
+  const lyriaPlayerRef = useRef<LyriaPlayer | null>(null);
+  const moodMapperRef = useRef<MoodMapper | null>(null);
+  const isStartingRef = useRef(false);
+
+  // Track actual screen size for fullscreen frog
+  useEffect(() => {
+    const update = () =>
+      setScreenSize({ width: window.innerWidth, height: window.innerHeight });
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  // Poll AudioPlayer to keep mouth animation in sync
   useEffect(() => {
     const id = setInterval(() => {
       setIsAudioPlaying(playerRef.current?.isCurrentlyPlaying() ?? false);
@@ -60,415 +103,406 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  // Measure available width for the frog
-  useEffect(() => {
-    const update = () => {
-      if (frogContainerRef.current) {
-        setFrogWidth(frogContainerRef.current.offsetWidth);
-      }
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    if (frogContainerRef.current) ro.observe(frogContainerRef.current);
-    return () => ro.disconnect();
+  /** Tear down Lyria (music) without touching Gemini/voice state. */
+  const stopLyria = useCallback(() => {
+    moodMapperRef.current?.reset(); moodMapperRef.current = null;
+    lyriaSessionRef.current?.disconnect(); lyriaSessionRef.current = null;
+    lyriaPlayerRef.current?.stop(); lyriaPlayerRef.current = null;
+    setLyriaStatus("disconnected");
+    setLyriaCloseDetail(null);
   }, []);
-
-  const sessionRef = useRef<GeminiLiveSession | null>(null);
-  const captureRef = useRef<AudioCapture | null>(null);
-  const playerRef = useRef<AudioPlayer | null>(null);
-  const lyriaSessionRef = useRef<LyriaSession | null>(null);
-  const lyriaPlayerRef = useRef<LyriaPlayer | null>(null);
-  const moodMapperRef = useRef<MoodMapper | null>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
-  /** Prevents handleStart from being invoked a second time while already starting. */
-  const isStartingRef = useRef(false);
-
-  // Auto-scroll transcript
-  useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript]);
 
   const handleStart = useCallback(async () => {
     if (isStartingRef.current) return;
     isStartingRef.current = true;
 
-    // Tear down any orphaned session first (handles state desync where UI shows
-    // "Ready" but refs still hold live objects from a previous run).
-    captureRef.current?.stop(); captureRef.current = null;
-    playerRef.current?.stop(); playerRef.current = null;
-    sessionRef.current?.disconnect(); sessionRef.current = null;
-    moodMapperRef.current?.reset(); moodMapperRef.current = null;
-    lyriaSessionRef.current?.disconnect(); lyriaSessionRef.current = null;
-    lyriaPlayerRef.current?.stop(); lyriaPlayerRef.current = null;
-
-    setError(null);
-    setTranscript([]);
-    setUsageEvents([]);
-    usageIdRef.current = 0;
-
-    const player = new AudioPlayer();
-    player.start();
-    playerRef.current = player;
-
-    // Lyria background music — non-blocking, failures are non-fatal
-    setLyriaStatus("disconnected");
-    setLyriaCloseDetail(null);
-    const lyriaPlayer = new LyriaPlayer();
-    lyriaPlayer.start();
-    lyriaPlayerRef.current = lyriaPlayer;
-
-    const lyriaSession = new LyriaSession({
-      onAudioChunk: (base64) => lyriaPlayer.enqueue(base64),
-      onStatusChange: (status) => setLyriaStatus(status),
-      onCloseDetail: (detail) => setLyriaCloseDetail(detail),
-    });
-    lyriaSessionRef.current = lyriaSession;
-
-    const moodMapper = new MoodMapper((prompt) => {
-      lyriaSession.setPrompt(prompt);
-    });
-    moodMapperRef.current = moodMapper;
-
-    // Connect Lyria in parallel — don't await, don't block Saga
-    void lyriaSession.connect();
-
-    const session = new GeminiLiveSession(
-      {
-        onAudioChunk: (base64) => {
-          player.enqueue(base64);
-        },
-        onTranscript: (entry) => {
-          // Feed model output to mood mapper for adaptive music
-          if (entry.role === "model") {
-            moodMapperRef.current?.feed(entry.text);
-          }
-          setTranscript((prev) => {
-            // Append to last entry if same role (streaming transcript)
-            const last = prev[prev.length - 1];
-            if (last && last.role === entry.role) {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, text: last.text + entry.text },
-              ];
-            }
-            return [...prev, entry];
-          });
-        },
-        onStateChange: (s) => {
-          setState(s);
-          if (s === "error") {
-            setError(
-              (prev) =>
-                prev ??
-                "WebSocket error or disconnect. Check the browser console."
-            );
-          }
-        },
-        onTokenFetchFailed: (msg) => {
-          setError(msg);
-        },
-        onHandshakeFailed: (msg) => {
-          setError(msg);
-        },
-        onInterrupted: () => {
-          player.flush();
-        },
-        onUsageMetadata: (payload) => {
-          usageIdRef.current += 1;
-          const id = usageIdRef.current;
-          const at = Date.now();
-          setUsageEvents((prev) => {
-            const next: UsageEvent[] = [...prev, { id, at, payload }];
-            return next.slice(-24);
-          });
-        },
-      },
-      STORYTELLER_PROMPT
-    );
-
-    sessionRef.current = session;
-    await session.connect();
-
-    // Start mic capture
     try {
-      const capture = new AudioCapture();
-      await capture.start((base64Pcm) => {
-        session.sendAudio(base64Pcm);
+      captureRef.current?.stop(); captureRef.current = null;
+      playerRef.current?.stop(); playerRef.current = null;
+      sessionRef.current?.disconnect(); sessionRef.current = null;
+      stopLyria();
+
+      setError(null);
+      setTranscript([]);
+      setUsageEvents([]);
+      usageIdRef.current = 0;
+
+      const player = new AudioPlayer();
+      player.start();
+      playerRef.current = player;
+
+      setLyriaStatus("disconnected");
+      setLyriaCloseDetail(null);
+      const lyriaPlayer = new LyriaPlayer();
+      lyriaPlayer.start();
+      lyriaPlayerRef.current = lyriaPlayer;
+
+      const lyriaSession = new LyriaSession({
+        onAudioChunk: (base64) => lyriaPlayer.enqueue(base64),
+        onStatusChange: (status) => setLyriaStatus(status),
+        onCloseDetail: (detail) => setLyriaCloseDetail(detail),
       });
-      captureRef.current = capture;
+      lyriaSessionRef.current = lyriaSession;
+
+      const moodMapper = new MoodMapper((prompt) => {
+        lyriaSession.setPrompt(prompt);
+      });
+      moodMapperRef.current = moodMapper;
+
+      const session = new GeminiLiveSession(
+        {
+          onAudioChunk: (base64) => { player.enqueue(base64); },
+          onTranscript: (entry) => {
+            if (entry.role === "model") {
+              moodMapperRef.current?.feed(entry.text);
+            }
+            setTranscript((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === entry.role) {
+                return [...prev.slice(0, -1), { ...last, text: last.text + entry.text }];
+              }
+              return [...prev, entry];
+            });
+          },
+          onStateChange: (s) => {
+            setState(s);
+            // When Gemini stops unexpectedly, tear down Lyria too so music
+            // never outlives the session and the button always returns to Start.
+            if (s === "error" || s === "disconnected") {
+              stopLyria();
+            }
+            if (s === "error") {
+              setError((prev) => prev ?? "WebSocket error or disconnect. Check the browser console.");
+            }
+          },
+          onTokenFetchFailed: (msg) => { setError(msg); },
+          onHandshakeFailed: (msg) => { setError(msg); },
+          onInterrupted: () => { player.flush(); },
+          onUsageMetadata: (payload) => {
+            usageIdRef.current += 1;
+            const id = usageIdRef.current;
+            const at = Date.now();
+            setUsageEvents((prev) => [...prev, { id, at, payload }].slice(-24));
+          },
+        },
+        STORYTELLER_PROMPT
+      );
+
+      sessionRef.current = session;
+      await session.connect();
+
+      // Start Lyria AFTER Gemini is established — both use the same API key on
+      // generativelanguage.googleapis.com. Opening Lyria first causes the server
+      // to reject the Gemini session with 1007 when Lyria's play() fires (~2s in).
+      void lyriaSession.connect();
+
+      try {
+        const capture = new AudioCapture();
+        await capture.start((base64Pcm) => { session.sendAudio(base64Pcm); });
+        captureRef.current = capture;
+      } catch (err) {
+        console.error("Mic access denied:", err);
+        setError("Microphone access is required. Please allow mic access and try again.");
+        session.disconnect();
+      }
     } catch (err) {
-      console.error("Mic access denied:", err);
-      setError("Microphone access is required. Please allow mic access and try again.");
-      session.disconnect();
+      console.error("[handleStart] Unexpected error:", err);
+      setError("Failed to start: " + (err instanceof Error ? err.message : String(err)));
+      stopLyria();
     } finally {
       isStartingRef.current = false;
     }
-  }, []);
+  }, [stopLyria]);
 
   const handleStop = useCallback(() => {
-    captureRef.current?.stop();
-    captureRef.current = null;
-    playerRef.current?.stop();
-    playerRef.current = null;
-    sessionRef.current?.disconnect();
-    sessionRef.current = null;
-    moodMapperRef.current?.reset();
-    moodMapperRef.current = null;
-    lyriaSessionRef.current?.disconnect();
-    lyriaSessionRef.current = null;
-    lyriaPlayerRef.current?.stop();
-    lyriaPlayerRef.current = null;
-    setLyriaStatus("disconnected");
-    setLyriaCloseDetail(null);
+    captureRef.current?.stop(); captureRef.current = null;
+    playerRef.current?.stop(); playerRef.current = null;
+    sessionRef.current?.disconnect(); sessionRef.current = null;
+    stopLyria();
     setUsageEvents([]);
-  }, []);
+  }, [stopLyria]);
 
   const isActive = state === "connected";
+  // Show Stop button if voice OR music is running so the user can always exit cleanly.
+  const isAnythingActive = isActive || lyriaStatus === "connected" || lyriaStatus === "connecting";
+
+  // Last 2 transcript entries for the bottom preview
+  const transcriptPreview = transcript.slice(-2);
+
+  const statusLabel =
+    state === "connected" ? "Listening" :
+    state === "connecting" ? "Connecting…" :
+    state === "error" ? "Error" :
+    "Ready";
+
+  const statusDotClass =
+    state === "connected" ? "bg-emerald-400" :
+    state === "connecting" ? "bg-amber-400 animate-pulse" :
+    state === "error" ? "bg-red-400" :
+    "bg-stone-500";
+
+  const musicDotClass =
+    lyriaStatus === "connected" ? "bg-purple-400" :
+    lyriaStatus === "connecting" ? "bg-purple-400 animate-pulse" :
+    "bg-purple-900/50";
 
   return (
-    <main className="relative isolate flex flex-col items-center min-h-dvh px-4 pb-8 max-w-lg mx-auto">
-      {/* Saga the Frog */}
-      <div ref={frogContainerRef} className="w-full">
+    <div className="relative w-full h-dvh overflow-hidden bg-stone-950">
+
+      {/* ── Fullscreen frog canvas ── */}
+      <div className="absolute inset-0">
         <StorytellerFrog
           isSpeaking={isAudioPlaying}
-          width={frogWidth}
-          height={Math.round(frogWidth * (320 / 512))}
+          width={screenSize.width}
+          height={screenSize.height}
+          fullscreen
         />
       </div>
 
-      {/* Header */}
-      <h1 className="text-2xl font-medium tracking-tight mt-5 mb-1">Saga</h1>
-      <p className="text-stone-400 text-sm mb-8">storyteller for kids</p>
+      {/* ── Top gradient scrim ── */}
+      <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-black/55 to-transparent pointer-events-none" />
 
-      {/* Status */}
-      <div className="flex items-center gap-3 mb-8">
-        {/* Voice status */}
-        <div
-          className={`w-2 h-2 rounded-full ${
-            state === "connected"
-              ? "bg-emerald-400"
-              : state === "connecting"
-              ? "bg-amber-400 animate-pulse"
-              : state === "error"
-              ? "bg-red-400"
-              : "bg-stone-600"
-          }`}
-        />
-        <span className="text-xs text-stone-400 uppercase tracking-wider">
-          {state === "connected"
-            ? "Listening"
-            : state === "connecting"
-            ? "Connecting..."
-            : state === "error"
-            ? "Error"
-            : "Ready"}
-        </span>
+      {/* ── Top bar: title + status ── */}
+      <div className="absolute inset-x-0 top-0 flex items-center justify-between px-5 pt-12">
+        <h1 className="text-xl font-semibold text-white tracking-tight drop-shadow-sm">
+          Saga
+        </h1>
 
-        {/* Music status — only shown when a session is active */}
-        {state !== "disconnected" && (
-          <>
-            <span className="text-stone-700 text-xs">·</span>
-            <div
-              className={`w-1.5 h-1.5 rounded-full ${
-                lyriaStatus === "connected"
-                  ? "bg-purple-400"
-                  : lyriaStatus === "connecting"
-                  ? "bg-purple-400 animate-pulse"
-                  : lyriaStatus === "failed"
-                  ? "bg-stone-600"
-                  : "bg-stone-700"
-              }`}
-            />
-            <span className="text-xs text-stone-600 uppercase tracking-wider" title={lyriaCloseDetail ?? undefined}>
-              {lyriaStatus === "connected"
-                ? "Music"
-                : lyriaStatus === "connecting"
-                ? "Music…"
-                : lyriaStatus === "failed"
-                ? `No music${lyriaCloseDetail ? ` (${lyriaCloseDetail})` : ""}`
-                : ""}
-            </span>
-          </>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Voice state dot */}
+          <div className={`w-2 h-2 rounded-full ${statusDotClass}`} />
+          <span className="text-xs text-white/80 uppercase tracking-wider font-medium">
+            {statusLabel}
+          </span>
+          {/* Music / Lyria dot — always visible */}
+          <div className={`w-2.5 h-2.5 rounded-full ${musicDotClass}`} title={lyriaCloseDetail ?? undefined} />
+          {/* Drawer trigger */}
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            className="ml-1 p-1.5 text-white/60 hover:text-white/90 active:opacity-70 touch-manipulation"
+            aria-label="Open settings"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <line x1="4" y1="6" x2="20" y2="6" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="18" x2="20" y2="18" />
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {/* Big button */}
-      <button
-        type="button"
-        onClick={isActive ? handleStop : handleStart}
-        disabled={state === "connecting"}
-        className={`
-          relative z-20 min-h-[8.5rem] min-w-[8.5rem] touch-manipulation select-none
-          w-32 h-32 rounded-full border-2 transition-all duration-300
-          flex items-center justify-center text-lg font-medium
-          disabled:opacity-50 disabled:cursor-not-allowed
-          active:opacity-90
-          ${
-            isActive
-              ? "border-red-400/60 bg-red-400/10 text-red-300 hover:bg-red-400/20"
-              : "border-emerald-400/60 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/20"
-          }
-        `}
-      >
-        {isActive ? "Stop" : state === "connecting" ? "..." : "Start"}
-      </button>
-
-      <p className="text-stone-500 text-xs mt-4 text-center">
-        {isActive
-          ? 'Say "Tell me a story about..." and Saga will narrate'
-          : "Tap to begin a storytelling session"}
-      </p>
-
-      {/* Error */}
+      {/* ── Error toast ── */}
       {error && (
-        <div className="mt-4 px-4 py-2 bg-red-900/30 border border-red-800/50 rounded-lg text-red-300 text-sm text-center">
+        <div className="absolute top-24 inset-x-5 px-4 py-2.5 bg-red-950/90 border border-red-700/60 rounded-xl text-red-200 text-sm text-center backdrop-blur-sm z-10">
           {error}
         </div>
       )}
 
-      {/* How storytelling is controlled: system prompt (no separate rule files in POC) */}
-      <details
-        className="mt-8 w-full rounded-lg border border-emerald-900/35 bg-stone-950/50 text-left"
-      >
-        <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium uppercase tracking-wider text-stone-500 hover:text-stone-400">
-          Story rules (prompt)
-        </summary>
-        <div className="border-t border-stone-800 px-3 py-3 space-y-4 text-xs text-stone-400">
-          <p className="leading-relaxed">
-            <span className="text-stone-300 font-medium">How this works: </span>
-            Gemini Live gets one{" "}
-            <code className="text-emerald-300/90">systemInstruction</code> when
-            the socket connects (
-            <code className="text-stone-400">sendSetup()</code> in{" "}
-            <code className="text-stone-400">lib/gemini-live.ts</code>). This POC
-            does not load external rule files; behavior is defined in{" "}
-            <code className="text-emerald-300/90">{STORYTELLER_PROMPT_SOURCE_FILE}</code>{" "}
-            and assembled into{" "}
-            <code className="text-stone-400">STORYTELLER_PROMPT</code>.
-          </p>
+      {/* ── Bottom gradient scrim ── */}
+      <div className="absolute inset-x-0 bottom-0 h-72 bg-gradient-to-t from-black/75 via-black/30 to-transparent pointer-events-none" />
 
-          <div>
-            <p className="text-[10px] uppercase tracking-wider text-stone-600 mb-2">
-              Rule blocks (order = order sent)
-            </p>
-            <ul className="space-y-2">
-              {SAGA_RULE_BLOCKS.map((block) => (
-                <li
-                  key={block.id}
-                  className="rounded border border-stone-800 bg-stone-950/80 overflow-hidden"
-                >
-                  <details className="group">
-                    <summary className="cursor-pointer px-2 py-2 text-stone-300 hover:bg-stone-900/80 list-none [&::-webkit-details-marker]:hidden flex flex-wrap gap-x-1">
-                      <span className="font-medium text-stone-200">
-                        {block.title}
-                      </span>
-                      <span className="text-stone-500">— {block.summary}</span>
-                    </summary>
-                    <pre className="border-t border-stone-800 px-2 py-2 text-[11px] leading-snug text-stone-400 whitespace-pre-wrap break-words font-mono max-h-36 overflow-y-auto">
-                      {block.body}
-                    </pre>
-                  </details>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div>
-            <p className="text-[10px] uppercase tracking-wider text-stone-600 mb-2">
-              Full system prompt (exact string sent)
-            </p>
-            <div className="max-h-48 overflow-y-auto rounded border border-stone-800 bg-stone-950 p-2">
-              <pre className="text-[11px] leading-snug text-stone-300 whitespace-pre-wrap break-words font-mono">
-                {STORYTELLER_PROMPT}
-              </pre>
-            </div>
-          </div>
-        </div>
-      </details>
-
-      {/* Usage decoder — Live API usageMetadata */}
-      <details
-        className="mt-8 w-full rounded-lg border border-stone-700/80 bg-stone-950/50 text-left"
-      >
-        <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium uppercase tracking-wider text-stone-500 hover:text-stone-400">
-          Usage decoder
-        </summary>
-        <div className="border-t border-stone-800 px-3 py-3 space-y-3">
-          {usageEvents.length === 0 ? (
-            <p className="text-xs text-stone-500">
-              Token counts from Gemini appear here when the server sends{" "}
-              <code className="text-stone-400">usageMetadata</code> on the
-              socket (often near turn boundaries).
-            </p>
-          ) : (
-            <>
-              <div className="text-xs text-amber-200/90 font-mono">
-                Latest:{" "}
-                {usageHeadline(usageEvents[usageEvents.length - 1]!.payload)}
-              </div>
-              <div className="max-h-52 overflow-y-auto rounded border border-stone-800 bg-stone-950 p-2">
-                <pre className="text-[11px] leading-snug text-stone-300 whitespace-pre-wrap break-words font-mono">
-                  {JSON.stringify(
-                    usageEvents[usageEvents.length - 1]!.payload,
-                    null,
-                    2
-                  )}
-                </pre>
-              </div>
-              {usageEvents.length > 1 && (
-                <div className="space-y-2">
-                  <p className="text-[10px] uppercase tracking-wider text-stone-600">
-                    Recent ({usageEvents.length})
-                  </p>
-                  <ul className="max-h-32 overflow-y-auto space-y-2 text-[10px] text-stone-500 font-mono">
-                    {usageEvents
-                      .slice()
-                      .reverse()
-                      .map((ev) => (
-                        <li
-                          key={ev.id}
-                          className="border-l-2 border-stone-700 pl-2"
-                        >
-                          <span className="text-stone-600">
-                            {new Date(ev.at).toLocaleTimeString()}
-                          </span>{" "}
-                          — {usageHeadline(ev.payload)}
-                        </li>
-                      ))}
-                  </ul>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </details>
-
-      {/* Transcript */}
-      {transcript.length > 0 && (
-        <div className="mt-8 w-full flex-1">
-          <h2 className="text-xs text-stone-500 uppercase tracking-wider mb-3">
-            Transcript
-          </h2>
-          <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-2">
-            {transcript.map((entry, i) => (
-              <div
-                key={i}
-                className={`text-sm leading-relaxed ${
-                  entry.role === "user"
-                    ? "text-stone-400 italic"
-                    : "text-stone-200"
-                }`}
-              >
-                <span className="text-xs text-stone-600 mr-2">
-                  {entry.role === "user" ? "You" : "Saga"}
-                </span>
-                {entry.text}
-              </div>
-            ))}
-            <div ref={transcriptEndRef} />
-          </div>
+      {/* ── Transcript preview: last 2 entries, wrapping ── */}
+      {transcriptPreview.length > 0 && (
+        <div className="absolute inset-x-0 bottom-48 px-5 space-y-2 drop-shadow-lg">
+          {transcriptPreview.map((entry, i) => (
+            <TranscriptLine
+              key={`${i}-${entry.role}`}
+              text={entry.text}
+              role={entry.role}
+              dim={i < transcriptPreview.length - 1}
+            />
+          ))}
         </div>
       )}
-    </main>
+
+      {/* ── "Say hi!" nudge — shown when connected and Saga isn't speaking ── */}
+      <div
+        className={`
+          absolute inset-x-0 bottom-48 flex justify-center
+          transition-all duration-700 ease-out pointer-events-none
+          ${isActive && !isAudioPlaying ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"}
+        `}
+      >
+        <p className="text-4xl font-bold text-white drop-shadow-lg tracking-tight">
+          Say hi!
+        </p>
+      </div>
+
+      {/* ── Start / Stop button ── */}
+      <div className="absolute inset-x-0 bottom-0 flex justify-center pb-12">
+        <button
+          type="button"
+          onClick={isAnythingActive ? handleStop : handleStart}
+          disabled={state === "connecting"}
+          className={`
+            w-28 h-28 rounded-full border-2 transition-all duration-300
+            flex items-center justify-center text-lg font-medium
+            disabled:opacity-50 disabled:cursor-not-allowed
+            touch-manipulation select-none active:scale-95
+            backdrop-blur-sm
+            ${isAnythingActive
+              ? "border-red-400/60 bg-red-400/15 text-red-200 hover:bg-red-400/25"
+              : "border-emerald-400/60 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/20"
+            }
+          `}
+        >
+          {isAnythingActive ? (
+            "Stop"
+          ) : state === "connecting" ? (
+            "…"
+          ) : (
+            <PlaySagaIcon className="w-11 h-11 shrink-0" />
+          )}
+        </button>
+      </div>
+
+      {/* ── Drawer backdrop ── */}
+      {drawerOpen && (
+        <div
+          className="absolute inset-0 z-40 bg-black/50 backdrop-blur-sm"
+          onClick={() => setDrawerOpen(false)}
+        />
+      )}
+
+      {/* ── Drawer (bottom sheet) ── */}
+      <div
+        className={`
+          absolute inset-x-0 bottom-0 z-50
+          max-h-[85dvh] bg-stone-900 rounded-t-2xl
+          flex flex-col overflow-hidden
+          transition-transform duration-300 ease-out
+          ${drawerOpen ? "translate-y-0" : "translate-y-full"}
+        `}
+      >
+        {/* Handle */}
+        <div className="flex-none flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full bg-stone-700" />
+        </div>
+
+        {/* Drawer header */}
+        <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-stone-800">
+          <h2 className="text-sm font-medium text-stone-200">Details</h2>
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(false)}
+            className="text-sm text-stone-400 hover:text-stone-200 touch-manipulation px-1 py-0.5"
+          >
+            Done
+          </button>
+        </div>
+
+        {/* Drawer content */}
+        <div className="overflow-y-auto flex-1 px-5 py-5 space-y-7 pb-10">
+
+          {/* Full transcript */}
+          {transcript.length > 0 && (
+            <section>
+              <h3 className="text-[10px] uppercase tracking-wider text-stone-500 mb-3">
+                Transcript
+              </h3>
+              <div className="space-y-3">
+                {transcript.map((entry, i) => (
+                  <div
+                    key={i}
+                    className={`text-sm leading-relaxed ${
+                      entry.role === "user" ? "text-stone-400 italic" : "text-stone-200"
+                    }`}
+                  >
+                    <span className="text-xs text-stone-600 mr-2">
+                      {entry.role === "user" ? "You" : "Saga"}
+                    </span>
+                    {entry.text}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Story rules */}
+          <section>
+            <h3 className="text-[10px] uppercase tracking-wider text-stone-500 mb-3">
+              Story Rules (Prompt)
+            </h3>
+            <p className="text-xs text-stone-500 leading-relaxed mb-3">
+              Gemini Live gets one{" "}
+              <code className="text-emerald-300/80">systemInstruction</code> on connect,
+              defined in{" "}
+              <code className="text-emerald-300/80">{STORYTELLER_PROMPT_SOURCE_FILE}</code>.
+            </p>
+            <div className="space-y-2">
+              {SAGA_RULE_BLOCKS.map((block) => (
+                <details
+                  key={block.id}
+                  className="rounded-lg border border-stone-800 bg-stone-950/80 overflow-hidden"
+                >
+                  <summary className="cursor-pointer px-3 py-2.5 text-sm text-stone-300 hover:bg-stone-900/80 list-none flex gap-1 items-baseline">
+                    <span className="font-medium text-stone-200">{block.title}</span>
+                    <span className="text-stone-500 text-xs ml-1">— {block.summary}</span>
+                  </summary>
+                  <pre className="border-t border-stone-800 px-3 py-2 text-[11px] leading-snug text-stone-400 whitespace-pre-wrap break-words font-mono max-h-36 overflow-y-auto">
+                    {block.body}
+                  </pre>
+                </details>
+              ))}
+            </div>
+            <details className="mt-2 rounded-lg border border-stone-800 bg-stone-950/80 overflow-hidden">
+              <summary className="cursor-pointer px-3 py-2.5 text-xs text-stone-500 uppercase tracking-wider">
+                Full system prompt
+              </summary>
+              <div className="border-t border-stone-800 max-h-48 overflow-y-auto p-3">
+                <pre className="text-[11px] leading-snug text-stone-300 whitespace-pre-wrap break-words font-mono">
+                  {STORYTELLER_PROMPT}
+                </pre>
+              </div>
+            </details>
+          </section>
+
+          {/* Usage decoder */}
+          <section>
+            <h3 className="text-[10px] uppercase tracking-wider text-stone-500 mb-3">
+              Usage Decoder
+            </h3>
+            {usageEvents.length === 0 ? (
+              <p className="text-xs text-stone-600">
+                Token counts from Gemini appear here near turn boundaries (
+                <code className="text-stone-500">usageMetadata</code> on the socket).
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <div className="text-xs text-amber-200/90 font-mono">
+                  Latest: {usageHeadline(usageEvents[usageEvents.length - 1]!.payload)}
+                </div>
+                <div className="max-h-48 overflow-y-auto rounded-lg border border-stone-800 bg-stone-950 p-2.5">
+                  <pre className="text-[11px] leading-snug text-stone-300 whitespace-pre-wrap break-words font-mono">
+                    {JSON.stringify(usageEvents[usageEvents.length - 1]!.payload, null, 2)}
+                  </pre>
+                </div>
+                {usageEvents.length > 1 && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-stone-600 mb-2">
+                      Recent ({usageEvents.length})
+                    </p>
+                    <ul className="max-h-28 overflow-y-auto space-y-2 text-[10px] text-stone-500 font-mono">
+                      {usageEvents
+                        .slice()
+                        .reverse()
+                        .map((ev) => (
+                          <li key={ev.id} className="border-l-2 border-stone-700 pl-2">
+                            <span className="text-stone-600">
+                              {new Date(ev.at).toLocaleTimeString()}
+                            </span>{" "}
+                            — {usageHeadline(ev.payload)}
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }

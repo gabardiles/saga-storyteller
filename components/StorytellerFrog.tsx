@@ -31,7 +31,7 @@ const COLORS = {
   firefly: "#f4e27a",
 };
 
-const ZOOM = 1.45;
+const ZOOM = 1.75;
 const TAU = Math.PI * 2;
 
 // ── Lily pad polygon points ────────────────────────────────────
@@ -53,6 +53,7 @@ interface Props {
   isSpeaking?: boolean;
   width?: number;
   height?: number;
+  fullscreen?: boolean;
 }
 
 interface Firefly {
@@ -90,6 +91,7 @@ export default function StorytellerFrog({
   isSpeaking = false,
   width = 700,
   height = 500,
+  fullscreen = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -107,7 +109,7 @@ export default function StorytellerFrog({
   });
 
   const FOCUS_X = width * 0.42;
-  const FOCUS_Y = height * 0.48;
+  const FOCUS_Y = height * 0.54;
 
   // Init particles
   useEffect(() => {
@@ -143,13 +145,13 @@ export default function StorytellerFrog({
   // ── Drawing ─────────────────────────────────────────────────
   const drawSky = useCallback(
     (ctx: CanvasRenderingContext2D, t: number) => {
-      const g = ctx.createLinearGradient(0, 0, 0, height * 0.55);
+      const g = ctx.createLinearGradient(0, 0, 0, height * 0.47);
       g.addColorStop(0, COLORS.skyTop);
       g.addColorStop(0.4, COLORS.skyMid);
       g.addColorStop(0.75, COLORS.skyBottom);
       g.addColorStop(1, COLORS.skyHorizon);
       ctx.fillStyle = g;
-      ctx.fillRect(0, 0, width, height * 0.55);
+      ctx.fillRect(0, 0, width, height * 0.47);
 
       const sg = ctx.createRadialGradient(width * 0.7, height * 0.5, 0, width * 0.7, height * 0.5, 180);
       sg.addColorStop(0, "rgba(255,200,100,0.35)");
@@ -175,7 +177,7 @@ export default function StorytellerFrog({
   const drawMist = useCallback(
     (ctx: CanvasRenderingContext2D, t: number) => {
       for (let i = 0; i < 5; i++) {
-        const y = height * 0.42 + i * 15;
+        const y = height * 0.37 + i * 15;
         const xO = Math.sin(t * 0.3 + i * 1.5) * 30;
         ctx.fillStyle = COLORS.mist;
         ctx.beginPath();
@@ -214,7 +216,7 @@ export default function StorytellerFrog({
 
   const drawWater = useCallback(
     (ctx: CanvasRenderingContext2D, t: number, state: AnimState) => {
-      const wy = height * 0.5;
+      const wy = height * 0.43;
       const wg = ctx.createLinearGradient(0, wy, 0, height);
       wg.addColorStop(0, COLORS.waterSurface);
       wg.addColorStop(0.3, COLORS.waterMid);
@@ -546,15 +548,15 @@ export default function StorytellerFrog({
       for (let i = 0; i < 5; i++) {
         const bx = 30 + i * 12;
         const sw = Math.sin(t * 0.5 + i * 0.8) * 3;
-        ctx.beginPath(); ctx.moveTo(bx, height * 0.55);
-        ctx.quadraticCurveTo(bx + sw, height * 0.35, bx + sw * 1.5, height * 0.2 + i * 15);
+        ctx.beginPath(); ctx.moveTo(bx, height * 0.47);
+        ctx.quadraticCurveTo(bx + sw, height * 0.3, bx + sw * 1.5, height * 0.15 + i * 15);
         ctx.lineWidth = 2; ctx.strokeStyle = `rgba(10,30,15,${0.4 + i * 0.05})`; ctx.stroke();
       }
       for (let i = 0; i < 4; i++) {
         const bx = width - 50 + i * 14;
         const sw = Math.sin(t * 0.4 + i * 1.1) * 4;
-        ctx.beginPath(); ctx.moveTo(bx, height * 0.55);
-        ctx.quadraticCurveTo(bx + sw, height * 0.3, bx + sw * 1.2, height * 0.15 + i * 20);
+        ctx.beginPath(); ctx.moveTo(bx, height * 0.47);
+        ctx.quadraticCurveTo(bx + sw, height * 0.25, bx + sw * 1.2, height * 0.1 + i * 20);
         ctx.lineWidth = 2; ctx.strokeStyle = `rgba(10,30,15,${0.3 + i * 0.06})`; ctx.stroke();
       }
 
@@ -578,9 +580,9 @@ export default function StorytellerFrog({
         position: "relative",
         width,
         height,
-        borderRadius: 16,
+        borderRadius: fullscreen ? 0 : 16,
         overflow: "hidden",
-        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        boxShadow: fullscreen ? "none" : "0 8px 32px rgba(0,0,0,0.5)",
       }}
     >
       <canvas ref={canvasRef} style={{ width, height, display: "block" }} />
