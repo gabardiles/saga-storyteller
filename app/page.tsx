@@ -76,6 +76,8 @@ export default function Home() {
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [screenSize, setScreenSize] = useState({ width: 390, height: 844 });
+  /** After any user/model text or Saga audio, hide "Say hi!" for the rest of the session. */
+  const [conversationStarted, setConversationStarted] = useState(false);
 
   const usageIdRef = useRef(0);
   const sessionRef = useRef<GeminiLiveSession | null>(null);
@@ -103,6 +105,22 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (state !== "connected") return;
+    if (
+      transcript.some(
+        (e) => e.role === "user" || e.role === "model"
+      )
+    ) {
+      setConversationStarted(true);
+    }
+  }, [state, transcript]);
+
+  useEffect(() => {
+    if (state !== "connected" || !isAudioPlaying) return;
+    setConversationStarted(true);
+  }, [state, isAudioPlaying]);
+
   /** Tear down Lyria (music) without touching Gemini/voice state. */
   const stopLyria = useCallback(() => {
     moodMapperRef.current?.reset(); moodMapperRef.current = null;
@@ -124,6 +142,7 @@ export default function Home() {
 
       setError(null);
       setTranscript([]);
+      setConversationStarted(false);
       setUsageEvents([]);
       usageIdRef.current = 0;
 
@@ -302,26 +321,34 @@ export default function Home() {
       {/* ── Bottom gradient scrim ── */}
       <div className="absolute inset-x-0 bottom-0 h-72 bg-gradient-to-t from-black/75 via-black/30 to-transparent pointer-events-none" />
 
-      {/* ── Transcript preview: last 2 entries, wrapping ── */}
+      {/* ── Transcript preview: last 2 turns, max 3 text lines; overflow clips top (newest stays visible) ── */}
       {transcriptPreview.length > 0 && (
-        <div className="absolute inset-x-0 bottom-48 px-5 space-y-2 drop-shadow-lg">
-          {transcriptPreview.map((entry, i) => (
-            <TranscriptLine
-              key={`${i}-${entry.role}`}
-              text={entry.text}
-              role={entry.role}
-              dim={i < transcriptPreview.length - 1}
-            />
-          ))}
+        <div className="absolute inset-x-0 bottom-48 px-5 drop-shadow-lg">
+          <div
+            className="text-sm leading-snug max-h-[3lh] overflow-hidden flex flex-col justify-end [&_p]:m-0"
+            aria-live="polite"
+            aria-relevant="additions text"
+          >
+            <div className="space-y-1">
+              {transcriptPreview.map((entry, i) => (
+                <TranscriptLine
+                  key={`${i}-${entry.role}`}
+                  text={entry.text}
+                  role={entry.role}
+                  dim={i < transcriptPreview.length - 1}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* ── "Say hi!" nudge — shown when connected and Saga isn't speaking ── */}
+      {/* ── "Say hi!" nudge — once per session, before any back-and-forth ── */}
       <div
         className={`
           absolute inset-x-0 bottom-48 flex justify-center
           transition-all duration-700 ease-out pointer-events-none
-          ${isActive && !isAudioPlaying ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"}
+          ${isActive && !isAudioPlaying && !conversationStarted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"}
         `}
       >
         <p className="text-4xl font-bold text-white drop-shadow-lg tracking-tight">
