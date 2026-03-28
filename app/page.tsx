@@ -172,10 +172,16 @@ export default function Home() {
         </span>
       </div>
 
-      {/* Big button — z-index + touch-manipulation help iPad Safari hit-testing */}
+      {/* Big button — touch-manipulation + onTouchEnd for iPad Safari hit-testing */}
       <button
         type="button"
         onClick={isActive ? handleStop : handleStart}
+        onTouchEnd={(e) => {
+          e.preventDefault();
+          if (state !== "connecting") {
+            isActive ? handleStop() : handleStart();
+          }
+        }}
         disabled={state === "connecting"}
         className={`
           relative z-20 min-h-[8.5rem] min-w-[8.5rem] touch-manipulation select-none
@@ -208,7 +214,6 @@ export default function Home() {
 
       {/* How storytelling is controlled: system prompt (no separate rule files in POC) */}
       <details
-        open
         className="mt-8 w-full rounded-lg border border-emerald-900/35 bg-stone-950/50 text-left"
       >
         <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium uppercase tracking-wider text-stone-500 hover:text-stone-400">
@@ -267,9 +272,8 @@ export default function Home() {
         </div>
       </details>
 
-      {/* Usage decoder — Live API usageMetadata (open by default, above transcript) */}
+      {/* Usage decoder — Live API usageMetadata */}
       <details
-        open
         className="mt-8 w-full rounded-lg border border-stone-700/80 bg-stone-950/50 text-left"
       >
         <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium uppercase tracking-wider text-stone-500 hover:text-stone-400">
