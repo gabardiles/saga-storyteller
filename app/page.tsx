@@ -143,7 +143,7 @@ export default function Home() {
   const isActive = state === "connected";
 
   return (
-    <main className="flex flex-col items-center min-h-dvh px-4 py-8 max-w-lg mx-auto">
+    <main className="relative isolate flex flex-col items-center min-h-dvh px-4 py-8 max-w-lg mx-auto">
       {/* Header */}
       <h1 className="text-2xl font-medium tracking-tight mb-1">Saga</h1>
       <p className="text-stone-400 text-sm mb-8">storyteller for kids</p>
@@ -172,14 +172,17 @@ export default function Home() {
         </span>
       </div>
 
-      {/* Big button */}
+      {/* Big button — z-index + touch-manipulation help iPad Safari hit-testing */}
       <button
+        type="button"
         onClick={isActive ? handleStop : handleStart}
         disabled={state === "connecting"}
         className={`
+          relative z-20 min-h-[8.5rem] min-w-[8.5rem] touch-manipulation select-none
           w-32 h-32 rounded-full border-2 transition-all duration-300
           flex items-center justify-center text-lg font-medium
           disabled:opacity-50 disabled:cursor-not-allowed
+          active:opacity-90
           ${
             isActive
               ? "border-red-400/60 bg-red-400/10 text-red-300 hover:bg-red-400/20"

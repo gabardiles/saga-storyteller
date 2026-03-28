@@ -1,24 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Allow audio worklet files to be served from public/
-  async headers() {
-    return [
-      {
-        source: "/(.*)",
-        headers: [
-          {
-            key: "Cross-Origin-Opener-Policy",
-            value: "same-origin",
-          },
-          {
-            key: "Cross-Origin-Embedder-Policy",
-            value: "require-corp",
-          },
-        ],
-      },
-    ];
-  },
+  // Intentionally no COOP/COEP: this POC uses ScriptProcessorNode, not AudioWorklet/SAB.
+  // COEP in particular has caused touch/interaction issues on iPad Safari while not being required here.
 };
 
 export default nextConfig;
