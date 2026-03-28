@@ -9,7 +9,7 @@ import {
 } from "@/lib/gemini-live";
 import { AudioCapture } from "@/lib/audio-capture";
 import { AudioPlayer } from "@/lib/audio-player";
-import { LyriaSession } from "@/lib/lyria-session";
+import { LyriaSession, type LyriaStatus } from "@/lib/lyria-session";
 import { LyriaPlayer } from "@/lib/lyria-player";
 import { MoodMapper } from "@/lib/mood-mapper";
 import {
@@ -41,6 +41,7 @@ function usageHeadline(u: LiveUsageSnapshot): string {
 
 export default function Home() {
   const [state, setState] = useState<SessionState>("disconnected");
+  const [lyriaStatus, setLyriaStatus] = useState<LyriaStatus>("disconnected");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [usageEvents, setUsageEvents] = useState<UsageEvent[]>([]);
@@ -69,13 +70,15 @@ export default function Home() {
     player.start();
     playerRef.current = player;
 
-    // Lyria background music — non-blocking, failures are silently swallowed
+    // Lyria background music — non-blocking, failures are non-fatal
+    setLyriaStatus("disconnected");
     const lyriaPlayer = new LyriaPlayer();
     lyriaPlayer.start();
     lyriaPlayerRef.current = lyriaPlayer;
 
-    const lyriaSession = new LyriaSession((base64) => {
-      lyriaPlayer.enqueue(base64);
+    const lyriaSession = new LyriaSession({
+      onAudioChunk: (base64) => lyriaPlayer.enqueue(base64),
+      onStatusChange: (status) => setLyriaStatus(status),
     });
     lyriaSessionRef.current = lyriaSession;
 
@@ -171,6 +174,7 @@ export default function Home() {
     lyriaSessionRef.current = null;
     lyriaPlayerRef.current?.stop();
     lyriaPlayerRef.current = null;
+    setLyriaStatus("disconnected");
     setUsageEvents([]);
   }, []);
 
@@ -183,7 +187,8 @@ export default function Home() {
       <p className="text-stone-400 text-sm mb-8">storyteller for kids</p>
 
       {/* Status */}
-      <div className="flex items-center gap-2 mb-8">
+      <div className="flex items-center gap-3 mb-8">
+        {/* Voice status */}
         <div
           className={`w-2 h-2 rounded-full ${
             state === "connected"
@@ -204,6 +209,33 @@ export default function Home() {
             ? "Error"
             : "Ready"}
         </span>
+
+        {/* Music status — only shown when a session is active */}
+        {state !== "disconnected" && (
+          <>
+            <span className="text-stone-700 text-xs">·</span>
+            <div
+              className={`w-1.5 h-1.5 rounded-full ${
+                lyriaStatus === "connected"
+                  ? "bg-purple-400"
+                  : lyriaStatus === "connecting"
+                  ? "bg-purple-400 animate-pulse"
+                  : lyriaStatus === "failed"
+                  ? "bg-stone-600"
+                  : "bg-stone-700"
+              }`}
+            />
+            <span className="text-xs text-stone-600 uppercase tracking-wider">
+              {lyriaStatus === "connected"
+                ? "Music"
+                : lyriaStatus === "connecting"
+                ? "Music…"
+                : lyriaStatus === "failed"
+                ? "No music"
+                : ""}
+            </span>
+          </>
+        )}
       </div>
 
       {/* Big button — touch-manipulation + onTouchEnd for iPad Safari hit-testing */}

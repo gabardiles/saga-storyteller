@@ -4,6 +4,10 @@
  * Runs alongside the Gemini Live session to stream adaptive background music.
  * Lyria outputs 48kHz stereo PCM. All failures are non-fatal — the Saga voice
  * session continues normally if Lyria is unavailable.
+ *
+ * Auth note: Lyria uses the standard BidiGenerateContent endpoint and only
+ * accepts direct API key auth. Ephemeral tokens (scoped to the constrained
+ * Gemini Live endpoint) are rejected — so we use /api/lyria-key, not /api/token.
  */
 
 const WS_LYRIA_V1ALPHA =
@@ -14,20 +18,29 @@ const LYRIA_MODEL = "models/lyria-realtime-exp";
 const LYRIA_DEFAULT_PROMPT =
   "warm gentle children's background music with soft acoustic guitar and light percussion";
 
+export type LyriaStatus = "disconnected" | "connecting" | "connected" | "failed";
+
+export interface LyriaCallbacks {
+  onAudioChunk: (base64: string) => void;
+  onStatusChange?: (status: LyriaStatus) => void;
+}
+
 export class LyriaSession {
   private ws: WebSocket | null = null;
-  private onAudioChunk: (base64: string) => void;
+  private callbacks: LyriaCallbacks;
   private setupComplete = false;
   private closingIntentionally = false;
 
-  constructor(onAudioChunk: (base64: string) => void) {
-    this.onAudioChunk = onAudioChunk;
+  constructor(callbacks: LyriaCallbacks) {
+    this.callbacks = callbacks;
   }
 
   async connect(): Promise<void> {
+    this.callbacks.onStatusChange?.("connecting");
+
     let wsUrl: string;
     try {
-      const res = await fetch("/api/token", { method: "POST" });
+      const res = await fetch("/api/lyria-key", { method: "POST" });
       let data: Record<string, unknown> = {};
       try {
         data = (await res.json()) as Record<string, unknown>;
@@ -39,25 +52,22 @@ export class LyriaSession {
           typeof data.error === "string" ? data.error : `HTTP ${res.status}`
         );
       }
-      const token = data.token as string;
-      if (!token) throw new Error("Token response missing token.");
-
-      // Lyria uses standard BidiGenerateContent (v1alpha), not the constrained variant.
-      // Both API-key and ephemeral access_token paths go through the same URL.
-      const useApiKey = data.mode === "apikey";
-      wsUrl = useApiKey
-        ? `${WS_LYRIA_V1ALPHA}?key=${encodeURIComponent(token)}`
-        : `${WS_LYRIA_V1ALPHA}?access_token=${encodeURIComponent(token)}`;
+      const key = data.key as string;
+      if (!key) throw new Error("lyria-key response missing key.");
+      wsUrl = `${WS_LYRIA_V1ALPHA}?key=${encodeURIComponent(key)}`;
     } catch (err) {
-      console.warn("Lyria: failed to get auth token — music disabled.", err);
+      console.warn("[Lyria] Failed to get API key — music disabled.", err);
+      this.callbacks.onStatusChange?.("failed");
       return;
     }
 
     try {
+      console.log("[Lyria] Opening WebSocket…");
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = "arraybuffer";
 
       this.ws.onopen = () => {
+        console.log("[Lyria] WebSocket open — sending setup");
         this.sendSetup();
       };
 
@@ -66,17 +76,20 @@ export class LyriaSession {
       };
 
       this.ws.onerror = (event) => {
-        console.warn("Lyria WebSocket error:", event);
+        console.warn("[Lyria] WebSocket error:", event);
+        this.callbacks.onStatusChange?.("failed");
       };
 
       this.ws.onclose = (event) => {
         if (!this.closingIntentionally) {
-          console.warn("Lyria WebSocket closed:", event.code, event.reason);
+          console.warn(`[Lyria] WebSocket closed: code=${event.code} reason="${event.reason}"`);
+          this.callbacks.onStatusChange?.("disconnected");
         }
         this.setupComplete = false;
       };
     } catch (err) {
-      console.warn("Lyria: failed to open WebSocket — music disabled.", err);
+      console.warn("[Lyria] Failed to open WebSocket — music disabled.", err);
+      this.callbacks.onStatusChange?.("failed");
     }
   }
 
@@ -109,9 +122,18 @@ export class LyriaSession {
     try {
       const msg = JSON.parse(raw) as Record<string, unknown>;
 
+      // Log everything except audio (too noisy) to help with debugging
+      const hasAudio =
+        (msg as { serverContent?: { modelTurn?: { parts?: unknown[] } } })
+          .serverContent?.modelTurn?.parts != null;
+      if (!hasAudio) {
+        console.log("[Lyria] message:", JSON.stringify(msg).slice(0, 300));
+      }
+
       if (msg.setupComplete != null) {
-        console.log("Lyria setup complete — sending initial config + default prompt");
+        console.log("[Lyria] Setup complete — sending config + default prompt");
         this.setupComplete = true;
+        this.callbacks.onStatusChange?.("connected");
 
         if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(
@@ -124,9 +146,9 @@ export class LyriaSession {
               },
             })
           );
-          // Send default prompt immediately so Lyria starts steered, not free-form.
+          // Send default prompt so Lyria starts steered from the first note.
           // MoodMapper only fires onPromptChange when mood CHANGES away from default,
-          // so without this the default prompt would never be sent.
+          // so without this the default prompt would never reach Lyria.
           this.ws.send(
             JSON.stringify({
               weighted_prompts: [{ text: LYRIA_DEFAULT_PROMPT, weight: 1.0 }],
@@ -136,16 +158,20 @@ export class LyriaSession {
         return;
       }
 
-      const content = (msg as { serverContent?: { modelTurn?: { parts?: Array<{ inlineData?: { data?: string } }> } } }).serverContent;
+      const content = (msg as {
+        serverContent?: {
+          modelTurn?: { parts?: Array<{ inlineData?: { data?: string } }> };
+        };
+      }).serverContent;
       if (content?.modelTurn?.parts) {
         for (const part of content.modelTurn.parts) {
           if (part.inlineData?.data) {
-            this.onAudioChunk(part.inlineData.data);
+            this.callbacks.onAudioChunk(part.inlineData.data);
           }
         }
       }
     } catch (err) {
-      console.warn("Lyria: failed to parse message:", err);
+      console.warn("[Lyria] Failed to parse message:", err);
     }
   }
 
@@ -153,6 +179,7 @@ export class LyriaSession {
   setPrompt(text: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.setupComplete)
       return;
+    console.log("[Lyria] setPrompt:", text.slice(0, 60));
     this.ws.send(
       JSON.stringify({ weighted_prompts: [{ text, weight: 1.0 }] })
     );
@@ -160,7 +187,8 @@ export class LyriaSession {
 
   /** Adjust music generation parameters on the fly. */
   setConfig(bpm: number, density: number, brightness: number): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.setupComplete)
+      return;
     this.ws.send(
       JSON.stringify({
         music_generation_config: { bpm, temperature: 1.0, density, brightness },
@@ -175,5 +203,6 @@ export class LyriaSession {
       this.ws = null;
     }
     this.setupComplete = false;
+    this.callbacks.onStatusChange?.("disconnected");
   }
 }
