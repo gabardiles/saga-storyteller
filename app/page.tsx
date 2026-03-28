@@ -9,6 +9,9 @@ import {
 } from "@/lib/gemini-live";
 import { AudioCapture } from "@/lib/audio-capture";
 import { AudioPlayer } from "@/lib/audio-player";
+import { LyriaSession } from "@/lib/lyria-session";
+import { LyriaPlayer } from "@/lib/lyria-player";
+import { MoodMapper } from "@/lib/mood-mapper";
 import {
   SAGA_RULE_BLOCKS,
   STORYTELLER_PROMPT,
@@ -46,6 +49,9 @@ export default function Home() {
   const sessionRef = useRef<GeminiLiveSession | null>(null);
   const captureRef = useRef<AudioCapture | null>(null);
   const playerRef = useRef<AudioPlayer | null>(null);
+  const lyriaSessionRef = useRef<LyriaSession | null>(null);
+  const lyriaPlayerRef = useRef<LyriaPlayer | null>(null);
+  const moodMapperRef = useRef<MoodMapper | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll transcript
@@ -63,12 +69,34 @@ export default function Home() {
     player.start();
     playerRef.current = player;
 
+    // Lyria background music — non-blocking, failures are silently swallowed
+    const lyriaPlayer = new LyriaPlayer();
+    lyriaPlayer.start();
+    lyriaPlayerRef.current = lyriaPlayer;
+
+    const lyriaSession = new LyriaSession((base64) => {
+      lyriaPlayer.enqueue(base64);
+    });
+    lyriaSessionRef.current = lyriaSession;
+
+    const moodMapper = new MoodMapper((prompt) => {
+      lyriaSession.setPrompt(prompt);
+    });
+    moodMapperRef.current = moodMapper;
+
+    // Connect Lyria in parallel — don't await, don't block Saga
+    void lyriaSession.connect();
+
     const session = new GeminiLiveSession(
       {
         onAudioChunk: (base64) => {
           player.enqueue(base64);
         },
         onTranscript: (entry) => {
+          // Feed model output to mood mapper for adaptive music
+          if (entry.role === "model") {
+            moodMapperRef.current?.feed(entry.text);
+          }
           setTranscript((prev) => {
             // Append to last entry if same role (streaming transcript)
             const last = prev[prev.length - 1];
@@ -137,6 +165,12 @@ export default function Home() {
     playerRef.current = null;
     sessionRef.current?.disconnect();
     sessionRef.current = null;
+    moodMapperRef.current?.reset();
+    moodMapperRef.current = null;
+    lyriaSessionRef.current?.disconnect();
+    lyriaSessionRef.current = null;
+    lyriaPlayerRef.current?.stop();
+    lyriaPlayerRef.current = null;
     setUsageEvents([]);
   }, []);
 
