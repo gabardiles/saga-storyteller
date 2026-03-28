@@ -11,6 +11,9 @@ const WS_LYRIA_V1ALPHA =
 
 const LYRIA_MODEL = "models/lyria-realtime-exp";
 
+const LYRIA_DEFAULT_PROMPT =
+  "warm gentle children's background music with soft acoustic guitar and light percussion";
+
 export class LyriaSession {
   private ws: WebSocket | null = null;
   private onAudioChunk: (base64: string) => void;
@@ -107,7 +110,7 @@ export class LyriaSession {
       const msg = JSON.parse(raw) as Record<string, unknown>;
 
       if (msg.setupComplete != null) {
-        console.log("Lyria setup complete — sending initial music config");
+        console.log("Lyria setup complete — sending initial config + default prompt");
         this.setupComplete = true;
 
         if (this.ws?.readyState === WebSocket.OPEN) {
@@ -119,6 +122,14 @@ export class LyriaSession {
                 density: 0.5,
                 brightness: 0.6,
               },
+            })
+          );
+          // Send default prompt immediately so Lyria starts steered, not free-form.
+          // MoodMapper only fires onPromptChange when mood CHANGES away from default,
+          // so without this the default prompt would never be sent.
+          this.ws.send(
+            JSON.stringify({
+              weighted_prompts: [{ text: LYRIA_DEFAULT_PROMPT, weight: 1.0 }],
             })
           );
         }
